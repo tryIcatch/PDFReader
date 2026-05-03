@@ -28,13 +28,14 @@ export const IPC_CHANNELS = {
   SETTINGS_TEST_PIX2TEX: "settings:test-pix2tex",
   SETTINGS_SAVE_FORMULA_OCR: "settings:save-formula-ocr",
   SETTINGS_GET_FORMULA_OCR: "settings:get-formula-ocr",
-  SETTINGS_SAVE_AUTO_TRANSLATE: "settings:save-auto-translate",
-  SETTINGS_GET_AUTO_TRANSLATE: "settings:get-auto-translate",
+  SETTINGS_SAVE_HOVER_TRANSLATE: "settings:save-hover-translate",
+  SETTINGS_GET_HOVER_TRANSLATE: "settings:get-hover-translate",
   SETTINGS_SAVE_THEME: "settings:save-theme",
   SETTINGS_GET_THEME: "settings:get-theme",
   DIALOG_PICK_PDF: "dialog:pick-pdf",
   FILE_SAVE_FORMULA_IMAGE: "file:save-formula-image",
   APP_MENU_ACTION: "app:menu-action",
+  MENU_UPDATE_RECENT_DOCUMENTS: "menu:update-recent-documents",
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

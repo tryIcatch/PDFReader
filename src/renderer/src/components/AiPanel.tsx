@@ -1,9 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Copy } from "lucide-react";
 
 import type { FormulaItem, NoteItem, OpenDocumentResult } from "@shared/types";
 
 import type { ReaderTextSelection } from "../types/reader";
+import { documentService } from "../services/documentService";
+import { renderMixedLatexContent } from "../utils/renderMixedLatex";
 import { FormulaRender } from "./FormulaRender";
+import { LatexMarkdown } from "./LatexMarkdown";
 
 type AiPanelTab = "translation" | "formula" | "notes" | "export";
 
@@ -236,7 +240,9 @@ export function AiPanel(props: AiPanelProps) {
               <div className="preview-block">
                 {props.isExplainingFormula
                   ? "正在生成公式解释..."
-                  : currentFormula?.explanation || "识别完成后，这里会显示公式含义与简化说明。"}
+                  : currentFormula?.explanation
+                    ? <LatexMarkdown content={currentFormula.explanation} />
+                    : "识别完成后，这里会显示公式含义与简化说明。"}
               </div>
             </div>
 
@@ -246,7 +252,9 @@ export function AiPanel(props: AiPanelProps) {
                 <ul className="formula-variable-list">
                   {currentFormula.variables.map((variable) => (
                     <li key={`${variable.symbol}:${variable.meaning}`}>
-                      <strong>{variable.symbol}</strong>
+                      <strong className="formula-variable-symbol">
+                        {renderMixedLatexContent(variable.symbol)}
+                      </strong>
                       <span>{variable.meaning}</span>
                     </li>
                   ))}
@@ -299,11 +307,13 @@ export function AiPanel(props: AiPanelProps) {
           <section className="panel-card">
             <h3>文档笔记</h3>
             <div className="panel-metric">
-              当前文档笔记数：<strong>{props.notes.length}</strong>
+              当前文档笔记数：<strong>{props.notes.filter((n) => n.noteType === "formula_favorite" || n.comment).length}</strong>
             </div>
             {props.notes.length > 0 ? (
               <ul className="panel-list">
-                {props.notes.slice(0, 8).map((note) => (
+                {props.notes
+                  .filter((n) => n.noteType === "formula_favorite" || n.comment)
+                  .slice(0, 8).map((note) => (
                   <li key={note.id}>
                     <button
                       className={
@@ -317,8 +327,25 @@ export function AiPanel(props: AiPanelProps) {
                       {toNoteTypeLabel(note.noteType)}
                       <span className="panel-list-page"> · p.{note.pageNumber}</span>
                     </strong>
-                    <span>{note.selectedText || note.comment || "公式收藏"}</span>
+                    {note.noteType === "formula_favorite" && note.selectedText ? (
+                      <span className="panel-list-formula">
+                        <FormulaRender latex={note.selectedText} />
+                      </span>
+                    ) : (
+                      <span>{note.selectedText || note.comment || "公式收藏"}</span>
+                    )}
                     </button>
+                    {note.noteType === "formula_favorite" ? (
+                      <FormulaNoteCopyButton
+                        latex={note.selectedText ?? ""}
+                        formulaId={note.formulaId}
+                        formulas={props.formulas}
+                      />
+                    ) : (
+                      <TextNoteCopyButton
+                        text={note.selectedText || note.comment || ""}
+                      />
+                    )}
                   </li>
                 ))}
               </ul>
@@ -351,6 +378,126 @@ export function AiPanel(props: AiPanelProps) {
   );
 }
 
+type FormulaNoteCopyButtonProps = {
+  latex: string;
+  formulaId?: string;
+  formulas: FormulaItem[];
+};
+
+function FormulaNoteCopyButton(props: FormulaNoteCopyButtonProps) {
+  const [open, setOpen] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState("");
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    function handleClickOutside(event: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+
+    window.addEventListener("mousedown", handleClickOutside);
+    return () => window.removeEventListener("mousedown", handleClickOutside);
+  }, [open]);
+
+  async function handleCopyLatex() {
+    try {
+      await navigator.clipboard.writeText(props.latex);
+      setCopyFeedback("LaTeX 已复制");
+    } catch {
+      setCopyFeedback("复制失败");
+    }
+
+    window.setTimeout(() => setCopyFeedback(""), 1400);
+    setOpen(false);
+  }
+
+  async function handleCopyImage() {
+    const formula = props.formulas.find((formula) => formula.id === props.formulaId);
+
+    if (!formula?.imagePath) {
+      setCopyFeedback("未找到公式截图");
+      window.setTimeout(() => setCopyFeedback(""), 1400);
+      setOpen(false);
+      return;
+    }
+
+    try {
+      const binary = await documentService.readDocumentBinary({ filePath: formula.imagePath });
+      const mimeType = guessImageMimeType(formula.imagePath);
+      const blob = new Blob([binary], { type: mimeType });
+      await navigator.clipboard.write([new ClipboardItem({ [mimeType]: blob })]);
+      setCopyFeedback("图片已复制");
+    } catch {
+      setCopyFeedback("复制失败");
+    }
+
+    window.setTimeout(() => setCopyFeedback(""), 1400);
+    setOpen(false);
+  }
+
+  return (
+    <div className="formula-note-copy" ref={containerRef}>
+      <button
+        className="icon-button formula-note-copy-trigger"
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((value) => !value);
+        }}
+        title="复制公式"
+      >
+        <Copy size={14} strokeWidth={2} />
+      </button>
+      {open ? (
+        <div className="formula-note-copy-menu">
+          <button onClick={() => void handleCopyLatex()}>复制 LaTeX</button>
+          <button onClick={() => void handleCopyImage()}>复制图片</button>
+        </div>
+      ) : null}
+      {copyFeedback ? (
+        <span className="formula-note-copy-feedback">{copyFeedback}</span>
+      ) : null}
+    </div>
+  );
+}
+
+function TextNoteCopyButton(props: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(props.text);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+
+    window.setTimeout(() => setCopied(false), 1400);
+  }
+
+  return (
+    <div className="formula-note-copy">
+      <button
+        className="icon-button formula-note-copy-trigger"
+        onClick={(event) => {
+          event.stopPropagation();
+          void handleCopy();
+        }}
+        title="复制文本"
+      >
+        <Copy size={14} strokeWidth={2} />
+      </button>
+      {copied ? (
+        <span className="formula-note-copy-feedback">已复制</span>
+      ) : null}
+    </div>
+  );
+}
+
 function toNoteTypeLabel(noteType: NoteItem["noteType"]): string {
   if (noteType === "highlight") {
     return "文本高亮";
@@ -374,4 +521,18 @@ function toFileUrl(filePath: string): string {
     : `file:///${normalizedPath}`;
 
   return encodeURI(withPrefix);
+}
+
+function guessImageMimeType(filePath: string): string {
+  const normalizedPath = filePath.toLowerCase();
+
+  if (normalizedPath.endsWith(".jpg") || normalizedPath.endsWith(".jpeg")) {
+    return "image/jpeg";
+  }
+
+  if (normalizedPath.endsWith(".webp")) {
+    return "image/webp";
+  }
+
+  return "image/png";
 }

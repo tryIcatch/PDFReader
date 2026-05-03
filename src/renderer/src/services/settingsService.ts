@@ -1,7 +1,7 @@
 import type {
   AiSettingsView,
-  AutoTranslateSettingsView,
   FormulaOcrSettingsView,
+  HoverTranslateSettingsView,
   MathpixSettingsView,
   Pix2TexSettingsView,
   ProviderHealthCheckResult,
@@ -66,11 +66,11 @@ export const settingsService = {
     return getDesktopApi().getThemeSettings();
   },
 
-  saveAutoTranslateSettings(params: { enabled: boolean }): Promise<void> {
-    return getDesktopApi().saveAutoTranslateSettings(params);
+  saveHoverTranslateSettings(params: { enabled: boolean }): Promise<void> {
+    return getDesktopApi().saveHoverTranslateSettings(params);
   },
 
-  getAutoTranslateSettings(): Promise<AutoTranslateSettingsView> {
-    return getDesktopApi().getAutoTranslateSettings();
+  getHoverTranslateSettings(): Promise<HoverTranslateSettingsView> {
+    return getDesktopApi().getHoverTranslateSettings();
   },
 };

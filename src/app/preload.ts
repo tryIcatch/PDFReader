@@ -60,9 +60,9 @@ const api: PreloadApi = {
   getFormulaOcrSettings: () => invoke(IPC_CHANNELS.SETTINGS_GET_FORMULA_OCR),
   saveThemeSettings: (params) => invoke(IPC_CHANNELS.SETTINGS_SAVE_THEME, params),
   getThemeSettings: () => invoke(IPC_CHANNELS.SETTINGS_GET_THEME),
-  saveAutoTranslateSettings: (params) =>
-    invoke(IPC_CHANNELS.SETTINGS_SAVE_AUTO_TRANSLATE, params),
-  getAutoTranslateSettings: () => invoke(IPC_CHANNELS.SETTINGS_GET_AUTO_TRANSLATE),
+  saveHoverTranslateSettings: (params) =>
+    invoke(IPC_CHANNELS.SETTINGS_SAVE_HOVER_TRANSLATE, params),
+  getHoverTranslateSettings: () => invoke(IPC_CHANNELS.SETTINGS_GET_HOVER_TRANSLATE),
   pickPdfFile: () => invoke(IPC_CHANNELS.DIALOG_PICK_PDF),
   saveFormulaImage: (params) => invoke(IPC_CHANNELS.FILE_SAVE_FORMULA_IMAGE, params),
   onAppMenuAction: (listener) => {
@@ -75,6 +75,9 @@ const api: PreloadApi = {
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.APP_MENU_ACTION, wrappedListener);
     };
+  },
+  updateRecentDocumentsMenu: (docs) => {
+    ipcRenderer.send(IPC_CHANNELS.MENU_UPDATE_RECENT_DOCUMENTS, docs);
   },
 };
 

@@ -1,5 +1,5 @@
 import { startTransition, useEffect, useEffectEvent, useRef, useState } from "react";
-import { Bot, PanelLeftOpen } from "lucide-react";
+import { PanelRightOpen } from "lucide-react";
 
 import type {
   AppMenuAction,
@@ -11,10 +11,10 @@ import type {
 } from "@shared/types";
 
 import { AiPanel } from "../components/AiPanel";
+import { HoverTranslation } from "../components/HoverTranslation";
 import { LibraryHome } from "../components/LibraryHome";
 import { PdfViewer } from "../components/PdfViewer";
 import { SettingsModal } from "../components/SettingsModal";
-import { Sidebar } from "../components/Sidebar";
 import { documentService } from "../services/documentService";
 import { exportService } from "../services/exportService";
 import { formulaService } from "../services/formulaService";
@@ -22,6 +22,7 @@ import { libraryService } from "../services/libraryService";
 import { noteService } from "../services/noteService";
 import { settingsService } from "../services/settingsService";
 import { translateService } from "../services/translateService";
+import { detectAndProtectFormulas, restoreFormulas } from "../utils/formulaProtector";
 import type {
   FormulaCaptureDraft,
   ReaderSearchResult,
@@ -29,11 +30,13 @@ import type {
 } from "../types/reader";
 
 type AiPanelTab = "translation" | "formula" | "notes" | "export";
-type ReaderZoomMode = "fit-width" | "manual";
+type ReaderZoomMode = "fit-width" | "manual" | "custom";
 type WorkspaceMode = "booting" | "library" | "reader";
 
 export function ReaderPage() {
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("booting");
+  const [focusMode, setFocusMode] = useState(false);
+  const [focusColumnMode, setFocusColumnMode] = useState<"single" | "double">("single");
   const [recentDocuments, setRecentDocuments] = useState<RecentDocumentItem[]>([]);
   const [librarySnapshot, setLibrarySnapshot] = useState<LibrarySnapshot>({
     folders: [],
@@ -47,19 +50,15 @@ export function ReaderPage() {
   const [searchResults, setSearchResults] = useState<ReaderSearchResult[]>([]);
   const [activeSearchResultIndex, setActiveSearchResultIndex] = useState(-1);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [zoom, setZoom] = useState(1);
-  const [zoomMode, setZoomMode] = useState<ReaderZoomMode>("fit-width");
   const [displayZoom, setDisplayZoom] = useState(1);
-  const [currentPage, setCurrentPage] = useState(1);
+  const [resetZoomVersion, setResetZoomVersion] = useState(0);
+  const [zoomMode, setZoomMode] = useState<ReaderZoomMode>("fit-width");
+  const [targetPage, setTargetPage] = useState(1);
+  const [displayPage, setDisplayPage] = useState(1);
+  const pageNavigationRef = useRef({ lastTarget: 1, updatedAt: 0 });
   const [pageCount, setPageCount] = useState(0);
   const [status, setStatus] = useState("正在准备工作区");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [autoTranslateEnabled, setAutoTranslateEnabled] = useState(false);
-  const [hoveredText, setHoveredText] = useState("");
-  const [hoveredPosition, setHoveredPosition] = useState<{ x: number; y: number } | null>(null);
-  const [hoveredTranslation, setHoveredTranslation] = useState("");
-  const [isTranslatingHover, setIsTranslatingHover] = useState(false);
-  const hoverGenerationRef = useRef(0);
   const [notes, setNotes] = useState<NoteItem[]>([]);
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
   const [formulas, setFormulas] = useState<FormulaItem[]>([]);
@@ -79,11 +78,16 @@ export function ReaderPage() {
   const [isRecognizingFormula, setIsRecognizingFormula] = useState(false);
   const [isExplainingFormula, setIsExplainingFormula] = useState(false);
   const [isSavingFormulaNote, setIsSavingFormulaNote] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const [hoverTranslateEnabled, setHoverTranslateEnabled] = useState(false);
+  const [hoverTranslationVisible, setHoverTranslationVisible] = useState(false);
+  const [highlightColor, setHighlightColor] = useState("#FFE58F");
+  const [isSelectionHighlighted, setIsSelectionHighlighted] = useState(false);
+  const [isSelectionFavorited, setIsSelectionFavorited] = useState(false);
   const [documentGlanceVisible, setDocumentGlanceVisible] = useState(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const documentGlanceTimerRef = useRef<number | null>(null);
+  const documentGlanceDebounceRef = useRef<number | null>(null);
   const formulaPreviewObjectUrlRef = useRef<string | null>(null);
 
   const revealDocumentGlance = useEffectEvent(() => {
@@ -91,17 +95,46 @@ export function ReaderPage() {
       return;
     }
 
-    setDocumentGlanceVisible(true);
-
-    if (documentGlanceTimerRef.current !== null) {
-      window.clearTimeout(documentGlanceTimerRef.current);
+    if (documentGlanceDebounceRef.current !== null) {
+      window.clearTimeout(documentGlanceDebounceRef.current);
     }
 
-    documentGlanceTimerRef.current = window.setTimeout(() => {
-      setDocumentGlanceVisible(false);
-      documentGlanceTimerRef.current = null;
-    }, 1600);
+    if (documentGlanceVisible) {
+      if (documentGlanceTimerRef.current !== null) {
+        window.clearTimeout(documentGlanceTimerRef.current);
+      }
+
+      documentGlanceTimerRef.current = window.setTimeout(() => {
+        setDocumentGlanceVisible(false);
+        documentGlanceTimerRef.current = null;
+      }, 1500);
+
+      return;
+    }
+
+    documentGlanceDebounceRef.current = window.setTimeout(() => {
+      documentGlanceDebounceRef.current = null;
+      setDocumentGlanceVisible(true);
+
+      if (documentGlanceTimerRef.current !== null) {
+        window.clearTimeout(documentGlanceTimerRef.current);
+      }
+
+      documentGlanceTimerRef.current = window.setTimeout(() => {
+        setDocumentGlanceVisible(false);
+        documentGlanceTimerRef.current = null;
+      }, 1500);
+    }, 180);
   });
+
+  function syncRecentDocumentsToMenu(items: RecentDocumentItem[]) {
+    window.pdfReader.updateRecentDocumentsMenu(
+      items.map((item) => ({
+        fileName: item.fileName,
+        filePath: item.filePath,
+      })),
+    );
+  }
 
   async function loadRecentDocuments() {
     try {
@@ -109,6 +142,7 @@ export function ReaderPage() {
       startTransition(() => {
         setRecentDocuments(items);
       });
+      syncRecentDocumentsToMenu(items);
     } catch (cause) {
       setStatus(cause instanceof Error ? cause.message : "读取最近文档失败");
     }
@@ -139,7 +173,6 @@ export function ReaderPage() {
     setFormulaPreview(null);
     setFormulaPreviewImageUrl("");
     setFormulaFeedback("");
-    setSidebarOpen(false);
     setAiPanelOpen(false);
   }
 
@@ -147,8 +180,8 @@ export function ReaderPage() {
     startTransition(() => {
       setWorkspaceMode("reader");
       setCurrentDocument(document);
-      setCurrentPage(document.lastPage ?? 1);
-      setZoom(1);
+      setTargetPage(document.lastPage ?? 1);
+      setDisplayPage(document.lastPage ?? 1);
       setZoomMode("fit-width");
       setDisplayZoom(1);
       resetReaderTransientState();
@@ -204,15 +237,13 @@ export function ReaderPage() {
   }
 
   function updateZoom(nextZoom: number) {
-    const normalizedZoom = Math.round(nextZoom * 100) / 100;
-    const safeZoom = Math.min(Math.max(normalizedZoom, 0.5), 4);
-    setZoomMode("manual");
-    setZoom(safeZoom);
+    setDisplayZoom(nextZoom);
+    setZoomMode("custom");
   }
 
   function resetZoom() {
     setZoomMode("manual");
-    setZoom(1);
+    setResetZoomVersion((v) => v + 1);
     setDisplayZoom(1);
     setStatus("缩放已恢复到 100%");
   }
@@ -239,31 +270,32 @@ export function ReaderPage() {
     document.documentElement.style.setProperty("--muted", rgbCss(mutedRgb));
   }
 
-  function handlePrevPage() {
-    setCurrentPage((page) => Math.max(page - 1, 1));
+  function getNavigationBasePage() {
+    const lastNavigation = pageNavigationRef.current;
+    return performance.now() - lastNavigation.updatedAt < 700 ? lastNavigation.lastTarget : displayPage;
+  }
+
+  function navigateToPage(page: number) {
+    const nextPage = Math.min(Math.max(page, 1), pageCount || 1);
+    pageNavigationRef.current = { lastTarget: nextPage, updatedAt: performance.now() };
+    setTargetPage(nextPage);
+    setDisplayPage(nextPage);
     revealDocumentGlance();
+  }
+
+  function handlePrevPage() {
+    navigateToPage(getNavigationBasePage() - 1);
   }
 
   function handleNextPage() {
-    setCurrentPage((page) => Math.min(page + 1, pageCount || 1));
-    revealDocumentGlance();
+    navigateToPage(getNavigationBasePage() + 1);
   }
 
-  function handleBoundaryPageRequest(direction: "previous" | "next") {
-    if (direction === "previous") {
-      if (currentPage <= 1) {
-        return;
-      }
-
-      handlePrevPage();
-      return;
+  function handleDisplayPageChange(page: number) {
+    setDisplayPage(page);
+    if (page === pageNavigationRef.current.lastTarget) {
+      pageNavigationRef.current.updatedAt = 0;
     }
-
-    if (!pageCount || currentPage >= pageCount) {
-      return;
-    }
-
-    handleNextPage();
   }
 
   async function openFileByPath(
@@ -364,9 +396,8 @@ export function ReaderPage() {
   }
 
   function handleOpenSearchResult(result: ReaderSearchResult, index: number) {
-    setCurrentPage(result.pageNumber);
+    setTargetPage(result.pageNumber);
     setActiveSearchResultIndex(index);
-    setSidebarOpen(true);
     setStatus(`已跳转到第 ${result.pageNumber} 页的搜索结果`);
     revealDocumentGlance();
   }
@@ -383,8 +414,6 @@ export function ReaderPage() {
       return;
     }
 
-    setSidebarOpen(true);
-
     if (nextResults.length === 0) {
       setActiveSearchResultIndex(-1);
       setStatus(`没有找到与“${normalizedQuery}”匹配的文本`);
@@ -392,7 +421,7 @@ export function ReaderPage() {
     }
 
     setActiveSearchResultIndex(0);
-    setCurrentPage(nextResults[0].pageNumber);
+    setTargetPage(nextResults[0].pageNumber);
     setStatus(`找到 ${nextResults.length} 条搜索结果，已定位到第一条`);
     revealDocumentGlance();
   }
@@ -449,15 +478,23 @@ export function ReaderPage() {
     setStatus("正在翻译当前选区...");
 
     try {
+      const textToTranslate = selection.selectedText;
+      const protection = detectAndProtectFormulas(textToTranslate);
+
       const result = await translateService.translateText({
         documentId: currentDocument.documentId,
         pageNumber: selection.pageNumber,
-        text: selection.selectedText,
+        text: protection.hasFormulas ? protection.protectedText : textToTranslate,
         targetLang: "zh-CN",
         context: selection.context,
+        formulaProtected: protection.hasFormulas,
       });
 
-      setTranslationPreview(result.translatedText);
+      const finalTranslation = protection.hasFormulas
+        ? restoreFormulas(result.translatedText, protection.formulaMap)
+        : result.translatedText;
+
+      setTranslationPreview(finalTranslation);
       setTranslationModel(result.model);
       setTranslationCached(result.cached);
       setStatus(result.cached ? "译文已返回（命中缓存）" : "译文已返回");
@@ -465,6 +502,54 @@ export function ReaderPage() {
       setStatus(cause instanceof Error ? cause.message : "翻译失败");
     } finally {
       setIsTranslating(false);
+    }
+  }
+
+  async function handleHighlightSelection(color: string) {
+    if (!currentDocument || !selectedTextSelection) {
+      return;
+    }
+
+    try {
+      await noteService.saveNote({
+        documentId: currentDocument.documentId,
+        pageNumber: selectedTextSelection.pageNumber,
+        noteType: "highlight",
+        selectedText: selectedTextSelection.selectedText,
+        color,
+        anchorJson: selectedTextSelection.anchorJson,
+        rectsJson: selectedTextSelection.rectsJson,
+      });
+
+      await loadDocumentArtifacts(currentDocument.documentId);
+      setStatus("已高亮选区");
+    } catch (cause) {
+      setStatus(cause instanceof Error ? cause.message : "高亮选区失败");
+    }
+  }
+
+  async function handleFavoriteSelection() {
+    if (!currentDocument || !selectedTextSelection) {
+      return;
+    }
+
+    try {
+      await noteService.saveNote({
+        documentId: currentDocument.documentId,
+        pageNumber: selectedTextSelection.pageNumber,
+        noteType: "highlight",
+        selectedText: selectedTextSelection.selectedText,
+        translatedText: translationPreview || undefined,
+        comment: "收藏选区",
+        color: highlightColor,
+        anchorJson: selectedTextSelection.anchorJson,
+        rectsJson: selectedTextSelection.rectsJson,
+      });
+
+      await loadDocumentArtifacts(currentDocument.documentId);
+      setStatus("已收藏选区");
+    } catch (cause) {
+      setStatus(cause instanceof Error ? cause.message : "收藏选区失败");
     }
   }
 
@@ -529,53 +614,6 @@ export function ReaderPage() {
       setIsSavingSelectionFavorite(false);
     }
   }
-
-  const handleHoverText = useEffectEvent(async (text: string, position: { x: number; y: number }) => {
-    if (!currentDocument || !autoTranslateEnabled) {
-      return;
-    }
-
-    hoverGenerationRef.current += 1;
-    const generation = hoverGenerationRef.current;
-
-    setHoveredText(text);
-    setHoveredPosition(position);
-    setHoveredTranslation("");
-    setIsTranslatingHover(true);
-
-    try {
-      const result = await translateService.translateText({
-        documentId: currentDocument.documentId,
-        pageNumber: currentPage,
-        text,
-        targetLang: "zh-CN",
-      });
-
-      if (hoverGenerationRef.current !== generation) {
-        return;
-      }
-
-      setHoveredTranslation(result.translatedText);
-    } catch {
-      if (hoverGenerationRef.current !== generation) {
-        return;
-      }
-
-      setHoveredTranslation("");
-    } finally {
-      if (hoverGenerationRef.current === generation) {
-        setIsTranslatingHover(false);
-      }
-    }
-  });
-
-  const handleHoverLeave = useEffectEvent(() => {
-    hoverGenerationRef.current += 1;
-    setHoveredText("");
-    setHoveredPosition(null);
-    setHoveredTranslation("");
-    setIsTranslatingHover(false);
-  });
 
   function handleStartFormulaSelection() {
     if (!currentDocument) {
@@ -755,7 +793,7 @@ export function ReaderPage() {
   function handleOpenNote(note: NoteItem) {
     startTransition(() => {
       setActiveNoteId(note.id);
-      setCurrentPage(note.pageNumber);
+      setTargetPage(note.pageNumber);
       setAiPanelOpen(true);
 
       if (note.noteType === "formula_favorite" && note.formulaId) {
@@ -774,6 +812,10 @@ export function ReaderPage() {
 
     revealDocumentGlance();
     setStatus(`已定位到第 ${note.pageNumber} 页的笔记`);
+
+    window.setTimeout(() => {
+      setActiveNoteId(null);
+    }, 2200);
   }
 
   function handleFormulaLatexChange(latex: string) {
@@ -788,7 +830,7 @@ export function ReaderPage() {
   }
 
   const handleAppMenuAction = useEffectEvent((action: AppMenuAction) => {
-    switch (action) {
+    switch (action.type) {
       case "open_library":
         openLibraryView(undefined, currentDocument?.libraryFolderId ?? selectedLibraryFolderId);
         void Promise.all([loadRecentDocuments(), loadLibrarySnapshot()]);
@@ -797,17 +839,15 @@ export function ReaderPage() {
       case "open_file":
         void handleOpenFile(workspaceMode === "library" ? selectedLibraryFolderId : undefined);
         break;
+      case "open_recent":
+        void openFileByPath(action.filePath);
+        break;
       case "open_settings":
         setSettingsOpen(true);
         break;
       case "toggle_search":
         if (workspaceMode === "reader") {
           setSearchOpen((open) => !open);
-        }
-        break;
-      case "toggle_sidebar":
-        if (workspaceMode === "reader") {
-          setSidebarOpen((open) => !open);
         }
         break;
       case "toggle_ai_panel":
@@ -830,6 +870,11 @@ export function ReaderPage() {
           handleNextPage();
         }
         break;
+      case "toggle_focus_mode":
+        if (workspaceMode === "reader") {
+          setFocusMode((enabled) => !enabled);
+        }
+        break;
     }
   });
 
@@ -842,14 +887,14 @@ export function ReaderPage() {
 
     async function loadSettings() {
       try {
-        const [themeSettings, autoTranslateSettings] = await Promise.all([
+        const [themeSettings, hoverTranslateSettings] = await Promise.all([
           settingsService.getThemeSettings(),
-          settingsService.getAutoTranslateSettings(),
+          settingsService.getHoverTranslateSettings(),
         ]);
 
         if (!canceled) {
           applyThemeColor(themeSettings.accentColor);
-          setAutoTranslateEnabled(autoTranslateSettings.enabled);
+          setHoverTranslateEnabled(hoverTranslateSettings.enabled);
         }
       } catch {
         if (!canceled) {
@@ -880,10 +925,10 @@ export function ReaderPage() {
 
     void documentService.updateReadingProgress({
       documentId: currentDocument.documentId,
-      lastPage: currentPage,
-      lastZoom: zoom,
+      lastPage: displayPage,
+      lastZoom: displayZoom,
     });
-  }, [currentDocument, currentPage, pageCount, zoom]);
+  }, [currentDocument, displayPage, pageCount, displayZoom]);
 
   useEffect(() => {
     if (!currentDocument) {
@@ -912,35 +957,57 @@ export function ReaderPage() {
       setTranslationCached(false);
       setSelectionMode("text");
       setFormulaFeedback("");
-      hoverGenerationRef.current += 1;
-      setHoveredText("");
-      setHoveredPosition(null);
-      setHoveredTranslation("");
-      setIsTranslatingHover(false);
+      setHoverTranslationVisible(false);
     });
 
     revealDocumentGlance();
-  }, [currentDocument?.documentId, currentPage]);
+  }, [currentDocument?.documentId, displayPage]);
+
+  useEffect(() => {
+    if (aiPanelOpen) {
+      setHoverTranslationVisible(false);
+    }
+  }, [aiPanelOpen]);
 
   useEffect(() => {
     if (!selectedTextSelection || !currentDocument) {
       return;
     }
 
-    if (autoTranslateEnabled) {
-      hoverGenerationRef.current += 1;
-      setHoveredText("");
-      setHoveredPosition(null);
-      setHoveredTranslation("");
-      setIsTranslatingHover(false);
-      void runSelectionTranslation(selectedTextSelection);
+    if (!hoverTranslateEnabled) {
       return;
     }
 
     setActiveTab("translation");
-    setAiPanelOpen(true);
-    void runSelectionTranslation(selectedTextSelection);
-  }, [currentDocument, selectedTextSelection?.signature, autoTranslateEnabled]);
+
+    if (aiPanelOpen) {
+      void runSelectionTranslation(selectedTextSelection);
+    } else {
+      setHoverTranslationVisible(true);
+      void runSelectionTranslation(selectedTextSelection);
+    }
+  }, [currentDocument, hoverTranslateEnabled, selectedTextSelection?.signature]);
+
+  useEffect(() => {
+    if (!selectedTextSelection || notes.length === 0) {
+      setIsSelectionHighlighted(false);
+      setIsSelectionFavorited(false);
+      return;
+    }
+
+    const matchingNotes = notes.filter(
+      (note) =>
+        note.pageNumber === selectedTextSelection.pageNumber &&
+        note.selectedText === selectedTextSelection.selectedText,
+    );
+
+    setIsSelectionHighlighted(
+      matchingNotes.some((note) => note.noteType === "highlight" && note.comment !== "收藏选区"),
+    );
+    setIsSelectionFavorited(
+      matchingNotes.some((note) => note.comment === "收藏选区"),
+    );
+  }, [selectedTextSelection?.signature, notes]);
 
   useEffect(() => {
     const imagePath = formulaPreview?.imagePath;
@@ -1041,6 +1108,10 @@ export function ReaderPage() {
         window.clearTimeout(documentGlanceTimerRef.current);
       }
 
+      if (documentGlanceDebounceRef.current !== null) {
+        window.clearTimeout(documentGlanceDebounceRef.current);
+      }
+
       if (formulaPreviewObjectUrlRef.current) {
         URL.revokeObjectURL(formulaPreviewObjectUrlRef.current);
         formulaPreviewObjectUrlRef.current = null;
@@ -1055,20 +1126,109 @@ export function ReaderPage() {
     <div className="reader-layout">
       <div className="reader-main">
         {isReaderMode ? (
-          <>
-            <button
-              className={
-                sidebarOpen
-                  ? "secondary edge-toggle edge-toggle--left edge-toggle--active"
-                  : "secondary edge-toggle edge-toggle--left"
-              }
-              onClick={() => setSidebarOpen((open) => !open)}
-              aria-label="目录"
-              title="目录"
-            >
-              <PanelLeftOpen size={18} strokeWidth={2.2} />
-              目录
-            </button>
+          <div className="reader-viewport">
+            <div className="reader-stage">
+              {searchOpen ? (
+                <div className="search-popover">
+                  <div className="search-popover-row">
+                    <input
+                      ref={searchInputRef}
+                      className="search-popover-input"
+                      placeholder="搜索当前 PDF（Ctrl+F）"
+                      value={searchQuery}
+                      onChange={(event) => setSearchQuery(event.target.value)}
+                    />
+                    <button className="secondary search-popover-close" onClick={() => setSearchOpen(false)}>
+                      关闭
+                    </button>
+                  </div>
+                  <div className="search-popover-row search-popover-row--meta">
+                    <div className="search-popover-count">
+                      {searchQuery
+                        ? searchResultsCountLabel(activeSearchResultIndex, searchResults.length)
+                        : "未搜索"}
+                    </div>
+                    <div className="search-popover-actions">
+                      <button
+                        className="secondary"
+                        disabled={!searchResults.length}
+                        onClick={handlePrevSearchResult}
+                      >
+                        上一个
+                      </button>
+                      <button
+                        className="secondary"
+                        disabled={!searchResults.length}
+                        onClick={handleNextSearchResult}
+                      >
+                        下一个
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {currentDocument ? (
+                <div
+                  className={
+                    documentGlanceVisible
+                      ? "document-glance document-glance--visible"
+                      : "document-glance"
+                  }
+                  title={currentDocument.fileName}
+                >
+                  {currentDocument.fileName}
+                </div>
+              ) : null}
+
+              <PdfViewer
+                document={currentDocument}
+                targetPage={targetPage}
+                resetZoomVersion={resetZoomVersion}
+                zoomMode={zoomMode}
+                searchQuery={searchQuery}
+                selectionMode={selectionMode}
+                focusMode={focusMode}
+                focusColumnMode={focusColumnMode}
+                onToggleFocusMode={() => setFocusMode((enabled) => !enabled)}
+                onDisplayPageChange={handleDisplayPageChange}
+                notes={notes}
+                formulas={formulas}
+                activeNoteId={activeNoteId}
+                onPageCountChange={setPageCount}
+                onRenderedScaleChange={setDisplayZoom}
+                onStatusChange={setStatus}
+                onSearchResultsChange={handleSearchResultsChange}
+                onZoomRequest={updateZoom}
+                onViewerActivity={() => revealDocumentGlance()}
+                onFormulaAreaCapture={(capture) => {
+                  void handleFormulaAreaCapture(capture);
+                }}
+                onTextSelectionChange={(selection) => {
+                  startTransition(() => {
+                    setSelectedTextSelection(selection);
+
+                    if (selection) {
+                      setActiveTab("translation");
+                    } else {
+                      setHoverTranslationVisible(false);
+                    }
+                  });
+                }}
+              />
+
+              <HoverTranslation
+                text={translationPreview}
+                visible={hoverTranslationVisible && !aiPanelOpen}
+                highlightColor={highlightColor}
+                isHighlighted={isSelectionHighlighted}
+                isFavorited={isSelectionFavorited}
+                onDismiss={() => setHoverTranslationVisible(false)}
+                onHighlight={(color) => { void handleHighlightSelection(color); }}
+                onFavorite={() => { void handleFavoriteSelection(); }}
+                onColorChange={setHighlightColor}
+              />
+            </div>
 
             <button
               className={
@@ -1080,186 +1240,62 @@ export function ReaderPage() {
               aria-label="AI 面板"
               title="AI 面板"
             >
-              <Bot size={18} strokeWidth={2.2} />
-              AI
+              <PanelRightOpen size={18} strokeWidth={1.5} />
             </button>
 
-            {searchOpen ? (
-              <div className="search-popover">
-                <div className="search-popover-row">
-                  <input
-                    ref={searchInputRef}
-                    className="search-popover-input"
-                    placeholder="搜索当前 PDF（Ctrl+F）"
-                    value={searchQuery}
-                    onChange={(event) => setSearchQuery(event.target.value)}
-                  />
-                  <button className="secondary search-popover-close" onClick={() => setSearchOpen(false)}>
-                    关闭
-                  </button>
-                </div>
-                <div className="search-popover-row search-popover-row--meta">
-                  <div className="search-popover-count">
-                    {searchQuery
-                      ? searchResultsCountLabel(activeSearchResultIndex, searchResults.length)
-                      : "未搜索"}
-                  </div>
-                  <div className="search-popover-actions">
-                    <button
-                      className="secondary"
-                      disabled={!searchResults.length}
-                      onClick={handlePrevSearchResult}
-                    >
-                      上一个
-                    </button>
-                    <button
-                      className="secondary"
-                      disabled={!searchResults.length}
-                      onClick={handleNextSearchResult}
-                    >
-                      下一个
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ) : null}
-
-            {currentDocument ? (
-              <div
-                className={
-                  sidebarOpen
-                    ? documentGlanceVisible
-                      ? "document-glance document-glance--visible document-glance--shifted"
-                      : "document-glance document-glance--shifted"
-                    : documentGlanceVisible
-                      ? "document-glance document-glance--visible"
-                      : "document-glance"
-                }
-                title={currentDocument.fileName}
-              >
-                {currentDocument.fileName}
-              </div>
-            ) : null}
-
-            {sidebarOpen ? (
-              <div className="reader-overlay reader-overlay--sidebar">
-                <Sidebar
-                  recentDocuments={recentDocuments}
-                  searchQuery={searchQuery}
-                  searchResults={searchResults}
-                  activeSearchIndex={activeSearchResultIndex}
-                  onOpenRecent={(item) => void openFileByPath(item.filePath)}
-                  onOpenSearchResult={handleOpenSearchResult}
-                />
-              </div>
-            ) : null}
-
-            <PdfViewer
-              document={currentDocument}
-              pageNumber={currentPage}
-              zoom={zoom}
-              zoomMode={zoomMode}
-              searchQuery={searchQuery}
-              selectionMode={selectionMode}
-              notes={notes}
-              formulas={formulas}
-              activeNoteId={activeNoteId}
-              onPageCountChange={setPageCount}
-              onRenderedScaleChange={setDisplayZoom}
-              onStatusChange={setStatus}
-              onSearchResultsChange={handleSearchResultsChange}
-              onZoomRequest={updateZoom}
-              onViewerActivity={() => revealDocumentGlance()}
-              onBoundaryPageRequest={handleBoundaryPageRequest}
-              onFormulaAreaCapture={(capture) => {
-                void handleFormulaAreaCapture(capture);
-              }}
-              onHoverText={(text, position) => {
-                void handleHoverText(text, position);
-              }}
-              onHoverLeave={() => {
-                handleHoverLeave();
-              }}
-              autoTranslateEnabled={autoTranslateEnabled}
-              hoveredTranslation={hoveredTranslation}
-              isTranslatingHover={isTranslatingHover}
-              onTextSelectionChange={(selection) => {
-                startTransition(() => {
-                  setSelectedTextSelection(selection);
-
-                  if (selection) {
-                    setActiveTab("translation");
-                  }
-                });
-              }}
-            />
-
-            {hoveredPosition && (hoveredTranslation || isTranslatingHover) ? (
-              <div
-                className="hover-translate-tooltip"
-                style={{
-                  left: `${hoveredPosition.x + 12}px`,
-                  top: `${hoveredPosition.y + 18}px`,
+            <div
+              className={
+                aiPanelOpen
+                  ? "reader-panel reader-panel--visible"
+                  : "reader-panel"
+              }
+            >
+              <AiPanel
+                activeTab={activeTab}
+                onTabChange={(tab) => {
+                  setActiveTab(tab);
+                  setAiPanelOpen(true);
                 }}
-              >
-                <div className="hover-translate-tooltip-original">{hoveredText}</div>
-                {isTranslatingHover ? (
-                  <div className="hover-translate-tooltip-loading">翻译中…</div>
-                ) : hoveredTranslation ? (
-                  <div className="hover-translate-tooltip-result">{hoveredTranslation}</div>
-                ) : null}
-              </div>
-            ) : null}
-
-            {aiPanelOpen ? (
-              <div className="reader-overlay reader-overlay--ai">
-                <AiPanel
-                  activeTab={activeTab}
-                  onTabChange={(tab) => {
-                    setActiveTab(tab);
-                    setAiPanelOpen(true);
-                  }}
-                  document={currentDocument}
-                  selectedTextSelection={selectedTextSelection}
-                  translationPreview={translationPreview}
-                  translationModel={translationModel}
-                  translationCached={translationCached}
-                  isTranslating={isTranslating}
-                  isSavingTranslationNote={isSavingTranslationNote}
-                  isSavingSelectionFavorite={isSavingSelectionFavorite}
-                  formulas={formulas}
-                  notes={notes}
-                  formulaPreview={formulaPreview}
-                  formulaPreviewImageUrl={formulaPreviewImageUrl}
-                  formulaFeedback={formulaFeedback}
-                  isFormulaSelectionMode={selectionMode === "formula"}
-                  isRecognizingFormula={isRecognizingFormula}
-                  isExplainingFormula={isExplainingFormula}
-                  isSavingFormulaNote={isSavingFormulaNote}
-                  activeNoteId={activeNoteId}
-                  onTranslateSelection={() => {
-                    if (selectedTextSelection) {
-                      void runSelectionTranslation(selectedTextSelection);
-                    }
-                  }}
-                  onSaveTranslationNote={() => void handleSaveTranslationNote()}
-                  onSaveSelectionFavorite={() => void handleSaveSelectionFavorite()}
-                  onStartFormulaSelection={handleStartFormulaSelection}
-                  onCancelFormulaSelection={handleCancelFormulaSelection}
-                  onExplainFormula={() => {
-                    if (formulaPreview) {
-                      void runFormulaExplanation(formulaPreview);
-                    }
-                  }}
-                  onSaveFormulaNote={() => void handleSaveFormulaNote()}
-                  onOpenFormulaPreview={handleOpenFormulaPreview}
-                  onFormulaLatexChange={handleFormulaLatexChange}
-                  onOpenNote={handleOpenNote}
-                  onExportMarkdown={() => void handleExportMarkdown()}
-                />
-              </div>
-            ) : null}
-          </>
+                document={currentDocument}
+                selectedTextSelection={selectedTextSelection}
+                translationPreview={translationPreview}
+                translationModel={translationModel}
+                translationCached={translationCached}
+                isTranslating={isTranslating}
+                isSavingTranslationNote={isSavingTranslationNote}
+                isSavingSelectionFavorite={isSavingSelectionFavorite}
+                formulas={formulas}
+                notes={notes}
+                formulaPreview={formulaPreview}
+                formulaPreviewImageUrl={formulaPreviewImageUrl}
+                formulaFeedback={formulaFeedback}
+                isFormulaSelectionMode={selectionMode === "formula"}
+                isRecognizingFormula={isRecognizingFormula}
+                isExplainingFormula={isExplainingFormula}
+                isSavingFormulaNote={isSavingFormulaNote}
+                activeNoteId={activeNoteId}
+                onTranslateSelection={() => {
+                  if (selectedTextSelection) {
+                    void runSelectionTranslation(selectedTextSelection);
+                  }
+                }}
+                onSaveTranslationNote={() => void handleSaveTranslationNote()}
+                onSaveSelectionFavorite={() => void handleSaveSelectionFavorite()}
+                onStartFormulaSelection={handleStartFormulaSelection}
+                onCancelFormulaSelection={handleCancelFormulaSelection}
+                onExplainFormula={() => {
+                  if (formulaPreview) {
+                    void runFormulaExplanation(formulaPreview);
+                  }
+                }}
+                onSaveFormulaNote={() => void handleSaveFormulaNote()}
+                onOpenFormulaPreview={handleOpenFormulaPreview}
+                onFormulaLatexChange={handleFormulaLatexChange}
+                onOpenNote={handleOpenNote}
+                onExportMarkdown={() => void handleExportMarkdown()}
+              />
+            </div>
+          </div>
         ) : workspaceMode === "booting" ? (
           <section className="viewer viewer--empty">
             <div className="viewer-empty-card">
@@ -1299,28 +1335,18 @@ export function ReaderPage() {
 
       <footer className="status-bar">
         <div className="status-bar-group status-bar-group--left">
-          <button
-            className="secondary status-bar-button"
-            onClick={() => {
-              openLibraryView(undefined, currentDocument?.libraryFolderId ?? selectedLibraryFolderId);
-              void Promise.all([loadRecentDocuments(), loadLibrarySnapshot()]);
-            }}
-          >
-            论文仓库
-          </button>
-
           {isReaderMode ? (
             <>
               <button
                 className="secondary status-bar-button"
-                disabled={currentPage <= 1 || !pageCount}
+                disabled={displayPage <= 1 || !pageCount}
                 onClick={handlePrevPage}
               >
                 上一页
               </button>
               <button
                 className="secondary status-bar-button"
-                disabled={currentPage >= pageCount || !pageCount}
+                disabled={displayPage >= pageCount || !pageCount}
                 onClick={handleNextPage}
               >
                 下一页
@@ -1344,7 +1370,7 @@ export function ReaderPage() {
 
         <div className="status-bar-group status-bar-group--right">
           <span className="status-bar-chip">
-            {isReaderMode && currentDocument ? `${currentPage}/${pageCount || 0}` : "论文仓库"}
+            {isReaderMode && currentDocument ? `${displayPage}/${pageCount || 0}` : "论文仓库"}
           </span>
           {isReaderMode ? (
             <button
@@ -1367,7 +1393,8 @@ export function ReaderPage() {
         onClose={() => setSettingsOpen(false)}
         onStatusChange={setStatus}
         onThemeChange={applyThemeColor}
-        onAutoTranslateChange={setAutoTranslateEnabled}
+        focusColumnMode={focusColumnMode}
+        onFocusColumnModeChange={setFocusColumnMode}
       />
     </div>
   );

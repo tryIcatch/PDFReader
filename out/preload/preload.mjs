@@ -29,13 +29,14 @@ const IPC_CHANNELS = {
   SETTINGS_TEST_PIX2TEX: "settings:test-pix2tex",
   SETTINGS_SAVE_FORMULA_OCR: "settings:save-formula-ocr",
   SETTINGS_GET_FORMULA_OCR: "settings:get-formula-ocr",
-  SETTINGS_SAVE_AUTO_TRANSLATE: "settings:save-auto-translate",
-  SETTINGS_GET_AUTO_TRANSLATE: "settings:get-auto-translate",
+  SETTINGS_SAVE_HOVER_TRANSLATE: "settings:save-hover-translate",
+  SETTINGS_GET_HOVER_TRANSLATE: "settings:get-hover-translate",
   SETTINGS_SAVE_THEME: "settings:save-theme",
   SETTINGS_GET_THEME: "settings:get-theme",
   DIALOG_PICK_PDF: "dialog:pick-pdf",
   FILE_SAVE_FORMULA_IMAGE: "file:save-formula-image",
-  APP_MENU_ACTION: "app:menu-action"
+  APP_MENU_ACTION: "app:menu-action",
+  MENU_UPDATE_RECENT_DOCUMENTS: "menu:update-recent-documents"
 };
 class RendererInvokeError extends Error {
   code;
@@ -88,8 +89,8 @@ const api = {
   getFormulaOcrSettings: () => invoke(IPC_CHANNELS.SETTINGS_GET_FORMULA_OCR),
   saveThemeSettings: (params) => invoke(IPC_CHANNELS.SETTINGS_SAVE_THEME, params),
   getThemeSettings: () => invoke(IPC_CHANNELS.SETTINGS_GET_THEME),
-  saveAutoTranslateSettings: (params) => invoke(IPC_CHANNELS.SETTINGS_SAVE_AUTO_TRANSLATE, params),
-  getAutoTranslateSettings: () => invoke(IPC_CHANNELS.SETTINGS_GET_AUTO_TRANSLATE),
+  saveHoverTranslateSettings: (params) => invoke(IPC_CHANNELS.SETTINGS_SAVE_HOVER_TRANSLATE, params),
+  getHoverTranslateSettings: () => invoke(IPC_CHANNELS.SETTINGS_GET_HOVER_TRANSLATE),
   pickPdfFile: () => invoke(IPC_CHANNELS.DIALOG_PICK_PDF),
   saveFormulaImage: (params) => invoke(IPC_CHANNELS.FILE_SAVE_FORMULA_IMAGE, params),
   onAppMenuAction: (listener) => {
@@ -100,6 +101,9 @@ const api = {
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.APP_MENU_ACTION, wrappedListener);
     };
+  },
+  updateRecentDocumentsMenu: (docs) => {
+    ipcRenderer.send(IPC_CHANNELS.MENU_UPDATE_RECENT_DOCUMENTS, docs);
   }
 };
 contextBridge.exposeInMainWorld("pdfReader", api);

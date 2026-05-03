@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, type MenuItemConstructorOptions } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, type MenuItemConstructorOptions } from "electron";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,26 +12,50 @@ let mainWindow: BrowserWindow | null = null;
 let databaseClient: DatabaseClient | null = null;
 const currentDir = dirname(fileURLToPath(import.meta.url));
 
+type RecentDocEntry = {
+  fileName: string;
+  filePath: string;
+};
+
+let recentDocs: RecentDocEntry[] = [];
+
 function sendAppMenuAction(window: BrowserWindow, action: AppMenuAction) {
   window.webContents.send(IPC_CHANNELS.APP_MENU_ACTION, action);
+}
+
+function buildFileSubmenu(window: BrowserWindow): MenuItemConstructorOptions[] {
+  const items: MenuItemConstructorOptions[] = [
+    {
+      label: "打开文件",
+      accelerator: "CmdOrCtrl+O",
+      click: () => sendAppMenuAction(window, { type: "open_file" }),
+    },
+    {
+      label: "论文仓库",
+      accelerator: "CmdOrCtrl+L",
+      click: () => sendAppMenuAction(window, { type: "open_library" }),
+    },
+    { type: "separator" },
+  ];
+
+  const recentItems: MenuItemConstructorOptions[] = recentDocs.map((doc) => ({
+    label: doc.fileName,
+    click: () => sendAppMenuAction(window, { type: "open_recent", filePath: doc.filePath }),
+  }));
+
+  items.push({
+    label: "最近阅读",
+    submenu: recentItems.length > 0 ? recentItems : [{ label: "暂无最近阅读", enabled: false }],
+  });
+
+  return items;
 }
 
 function buildApplicationMenu(window: BrowserWindow): Menu {
   const template: MenuItemConstructorOptions[] = [
     {
       label: "File",
-      submenu: [
-        {
-          label: "打开文件",
-          accelerator: "CmdOrCtrl+O",
-          click: () => sendAppMenuAction(window, "open_file"),
-        },
-        {
-          label: "论文仓库",
-          accelerator: "CmdOrCtrl+L",
-          click: () => sendAppMenuAction(window, "open_library"),
-        },
-      ],
+      submenu: buildFileSubmenu(window),
     },
     {
       label: "设置",
@@ -39,7 +63,17 @@ function buildApplicationMenu(window: BrowserWindow): Menu {
         {
           label: "打开设置",
           accelerator: "CmdOrCtrl+,",
-          click: () => sendAppMenuAction(window, "open_settings"),
+          click: () => sendAppMenuAction(window, { type: "open_settings" }),
+        },
+      ],
+    },
+    {
+      label: "模式",
+      submenu: [
+        {
+          label: "专注模式",
+          accelerator: "CmdOrCtrl+Shift+F",
+          click: () => sendAppMenuAction(window, { type: "toggle_focus_mode" }),
         },
       ],
     },
@@ -49,40 +83,46 @@ function buildApplicationMenu(window: BrowserWindow): Menu {
         {
           label: "搜索",
           accelerator: "CmdOrCtrl+F",
-          click: () => sendAppMenuAction(window, "toggle_search"),
-        },
-        {
-          label: "显示/隐藏目录",
-          accelerator: "CmdOrCtrl+1",
-          click: () => sendAppMenuAction(window, "toggle_sidebar"),
+          click: () => sendAppMenuAction(window, { type: "toggle_search" }),
         },
         {
           label: "显示/隐藏 AI 面板",
           accelerator: "CmdOrCtrl+2",
-          click: () => sendAppMenuAction(window, "toggle_ai_panel"),
+          click: () => sendAppMenuAction(window, { type: "toggle_ai_panel" }),
         },
         { type: "separator" },
         {
           label: "恢复 100% 缩放",
           accelerator: "CmdOrCtrl+0",
-          click: () => sendAppMenuAction(window, "reset_zoom"),
+          click: () => sendAppMenuAction(window, { type: "reset_zoom" }),
         },
         { type: "separator" },
         {
           label: "上一页",
           accelerator: "Left",
-          click: () => sendAppMenuAction(window, "previous_page"),
+          click: () => sendAppMenuAction(window, { type: "previous_page" }),
         },
         {
           label: "下一页",
           accelerator: "Right",
-          click: () => sendAppMenuAction(window, "next_page"),
+          click: () => sendAppMenuAction(window, { type: "next_page" }),
         },
       ],
     },
   ];
 
   return Menu.buildFromTemplate(template);
+}
+
+function refreshApplicationMenu() {
+  const window = mainWindow;
+
+  if (!window) {
+    return;
+  }
+
+  const menu = buildApplicationMenu(window);
+  window.setMenu(menu);
 }
 
 function createMainWindow(): BrowserWindow {
@@ -130,7 +170,7 @@ function createMainWindow(): BrowserWindow {
     void window.loadFile(indexPath);
   }
 
-  window.setMenu(buildApplicationMenu(window));
+  refreshApplicationMenu();
   return window;
 }
 
@@ -145,6 +185,11 @@ async function bootstrap(): Promise<void> {
     db: databaseClient.connection,
     userDataPath: app.getPath("userData"),
     documentsPath: app.getPath("documents"),
+  });
+
+  ipcMain.on(IPC_CHANNELS.MENU_UPDATE_RECENT_DOCUMENTS, (_event, docs: RecentDocEntry[]) => {
+    recentDocs = Array.isArray(docs) ? docs.slice(0, 10) : [];
+    refreshApplicationMenu();
   });
 
   mainWindow = createMainWindow();

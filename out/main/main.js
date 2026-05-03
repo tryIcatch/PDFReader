@@ -2,15 +2,45 @@ import { dialog, safeStorage, ipcMain, BrowserWindow, app, Menu } from "electron
 import { basename, join, extname, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
+import { unlinkSync, constants, readFileSync, mkdirSync, writeFileSync, createReadStream } from "node:fs";
 import { randomUUID, createHash } from "node:crypto";
-import { constants, readFileSync, mkdirSync, writeFileSync, createReadStream } from "node:fs";
 import { writeFile, readFile, access, stat, mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
+function isShmError(error) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "SQLITE_IOERR_SHMSIZE";
+}
+function tryEnableWAL(db, dbPath) {
+  try {
+    db.pragma("journal_mode = WAL");
+  } catch (error) {
+    if (isShmError(error)) {
+      cleanupStaleWALFiles(dbPath);
+      try {
+        db.pragma("journal_mode = WAL");
+        return;
+      } catch {
+      }
+    }
+    console.warn(
+      "[db] WAL mode unavailable, falling back to DELETE journal mode:",
+      error instanceof Error ? error.message : error
+    );
+    db.pragma("journal_mode = DELETE");
+  }
+}
+function cleanupStaleWALFiles(dbPath) {
+  for (const suffix of ["-wal", "-shm"]) {
+    try {
+      unlinkSync(dbPath + suffix);
+    } catch {
+    }
+  }
+}
 class DatabaseClient {
   connection;
   constructor(dbPath) {
     this.connection = new Database(dbPath);
-    this.connection.pragma("journal_mode = WAL");
+    tryEnableWAL(this.connection, dbPath);
     this.connection.pragma("foreign_keys = ON");
   }
   close() {
@@ -93,13 +123,14 @@ const IPC_CHANNELS = {
   SETTINGS_TEST_PIX2TEX: "settings:test-pix2tex",
   SETTINGS_SAVE_FORMULA_OCR: "settings:save-formula-ocr",
   SETTINGS_GET_FORMULA_OCR: "settings:get-formula-ocr",
-  SETTINGS_SAVE_AUTO_TRANSLATE: "settings:save-auto-translate",
-  SETTINGS_GET_AUTO_TRANSLATE: "settings:get-auto-translate",
+  SETTINGS_SAVE_HOVER_TRANSLATE: "settings:save-hover-translate",
+  SETTINGS_GET_HOVER_TRANSLATE: "settings:get-hover-translate",
   SETTINGS_SAVE_THEME: "settings:save-theme",
   SETTINGS_GET_THEME: "settings:get-theme",
   DIALOG_PICK_PDF: "dialog:pick-pdf",
   FILE_SAVE_FORMULA_IMAGE: "file:save-formula-image",
-  APP_MENU_ACTION: "app:menu-action"
+  APP_MENU_ACTION: "app:menu-action",
+  MENU_UPDATE_RECENT_DOCUMENTS: "menu:update-recent-documents"
 };
 function parseJson(value) {
   if (!value) {
@@ -946,10 +977,18 @@ class MathpixProvider {
 }
 class OpenAiCompatibleProvider {
   async translateText(config, params) {
+    const systemContent = params.formulaProtected ? [
+      "你是学术论文阅读助手。请只输出译文，保持术语准确、简洁。",
+      "重要：文本中的 ⟦FORMULA_n⟧ 是数学公式占位符。",
+      "1. 不要翻译、修改、删除任何占位符。",
+      "2. 占位符必须原样保留在译文中。",
+      "3. 只翻译周围的自然语言文本。",
+      "4. 不要增加解释性前缀。"
+    ].join("\n") : "你是学术论文阅读助手。请只输出译文，保持术语准确、简洁，不要增加解释性前缀。";
     const content = await this.requestChatCompletion(config, [
       {
         role: "system",
-        content: "你是学术论文阅读助手。请只输出译文，保持术语准确、简洁，不要增加解释性前缀。"
+        content: systemContent
       },
       {
         role: "user",
@@ -967,22 +1006,20 @@ class OpenAiCompatibleProvider {
     const content = await this.requestChatCompletion(config, [
       {
         role: "system",
-        content: '你是论文公式讲解助手。请仅返回 JSON，不要使用 Markdown 代码块。JSON 结构必须是 {"explanation":"...","variables":[{"symbol":"...","meaning":"..."}]}。'
+        content: "你是论文公式讲解助手。请直接用 Markdown 格式输出公式的中文解释，不要包含 JSON、不要使用代码块、不要输出 explanation/variables/meaning 等字段名。数学公式使用 LaTeX 语法：行内公式用 \\(...\\)，块级公式用 \\[...\\]。"
       },
       {
         role: "user",
         content: [
-          "请用中文解释下面的公式，并提取变量含义。",
+          "请用中文解释下面的公式，直接输出可展示的 Markdown 正文。",
           `LaTeX: ${params.latex}`,
-          params.context ? `上下文：${params.context}` : void 0,
-          "要求 explanation 中包含：公式含义、使用场景和简化说明。"
+          params.context ? `上下文：${params.context}` : void 0
         ].filter(Boolean).join("\n\n")
       }
     ]);
-    const parsed = this.parseJsonPayload(content);
     return {
-      explanation: parsed?.explanation?.trim() || content.trim(),
-      variables: Array.isArray(parsed?.variables) ? parsed.variables : []
+      explanation: content.trim(),
+      variables: []
     };
   }
   async requestChatCompletion(config, messages) {
@@ -1226,7 +1263,7 @@ const MATHPIX_META_KEY = "mathpix.meta";
 const PIX2TEX_META_KEY = "pix2tex.meta";
 const FORMULA_OCR_META_KEY = "formula.ocr.meta";
 const THEME_META_KEY = "ui.theme.meta";
-const AUTO_TRANSLATE_META_KEY = "ui.auto-translate.meta";
+const HOVER_TRANSLATE_META_KEY = "ui.hover-translate.meta";
 const DEFAULT_THEME_SETTINGS = {
   accentColor: "#7f4f24"
 };
@@ -1397,15 +1434,15 @@ function registerIpcHandlers(options) {
   register(IPC_CHANNELS.SETTINGS_GET_THEME, () => {
     return settingsRepository.get(THEME_META_KEY) ?? DEFAULT_THEME_SETTINGS;
   });
-  register(IPC_CHANNELS.SETTINGS_SAVE_AUTO_TRANSLATE, (payload) => {
-    settingsRepository.upsert(AUTO_TRANSLATE_META_KEY, {
+  register(IPC_CHANNELS.SETTINGS_SAVE_HOVER_TRANSLATE, (payload) => {
+    settingsRepository.upsert(HOVER_TRANSLATE_META_KEY, {
       enabled: Boolean(payload.enabled)
     });
   });
   register(
-    IPC_CHANNELS.SETTINGS_GET_AUTO_TRANSLATE,
+    IPC_CHANNELS.SETTINGS_GET_HOVER_TRANSLATE,
     () => {
-      return settingsRepository.get(AUTO_TRANSLATE_META_KEY) ?? {
+      return settingsRepository.get(HOVER_TRANSLATE_META_KEY) ?? {
         enabled: false
       };
     }
@@ -1513,7 +1550,10 @@ function registerIpcHandlers(options) {
         model: cached.modelName
       };
     }
-    const translatedText = await aiProvider.translateText(aiConfig, payload);
+    const translatedText = await aiProvider.translateText(aiConfig, {
+      ...payload,
+      formulaProtected: payload.formulaProtected ?? false
+    });
     translationCacheRepository.save({
       cacheKey,
       sourceText: payload.text,
@@ -1821,27 +1861,42 @@ async function computeFileHash(filePath) {
     stream.on("end", () => resolve(hash.digest("hex")));
   });
 }
+let mainWindow = null;
 let databaseClient = null;
 const currentDir = dirname(fileURLToPath(import.meta.url));
+let recentDocs = [];
 function sendAppMenuAction(window, action) {
   window.webContents.send(IPC_CHANNELS.APP_MENU_ACTION, action);
+}
+function buildFileSubmenu(window) {
+  const items = [
+    {
+      label: "打开文件",
+      accelerator: "CmdOrCtrl+O",
+      click: () => sendAppMenuAction(window, { type: "open_file" })
+    },
+    {
+      label: "论文仓库",
+      accelerator: "CmdOrCtrl+L",
+      click: () => sendAppMenuAction(window, { type: "open_library" })
+    },
+    { type: "separator" }
+  ];
+  const recentItems = recentDocs.map((doc) => ({
+    label: doc.fileName,
+    click: () => sendAppMenuAction(window, { type: "open_recent", filePath: doc.filePath })
+  }));
+  items.push({
+    label: "最近阅读",
+    submenu: recentItems.length > 0 ? recentItems : [{ label: "暂无最近阅读", enabled: false }]
+  });
+  return items;
 }
 function buildApplicationMenu(window) {
   const template = [
     {
       label: "File",
-      submenu: [
-        {
-          label: "打开文件",
-          accelerator: "CmdOrCtrl+O",
-          click: () => sendAppMenuAction(window, "open_file")
-        },
-        {
-          label: "论文仓库",
-          accelerator: "CmdOrCtrl+L",
-          click: () => sendAppMenuAction(window, "open_library")
-        }
-      ]
+      submenu: buildFileSubmenu(window)
     },
     {
       label: "设置",
@@ -1849,7 +1904,17 @@ function buildApplicationMenu(window) {
         {
           label: "打开设置",
           accelerator: "CmdOrCtrl+,",
-          click: () => sendAppMenuAction(window, "open_settings")
+          click: () => sendAppMenuAction(window, { type: "open_settings" })
+        }
+      ]
+    },
+    {
+      label: "模式",
+      submenu: [
+        {
+          label: "专注模式",
+          accelerator: "CmdOrCtrl+Shift+F",
+          click: () => sendAppMenuAction(window, { type: "toggle_focus_mode" })
         }
       ]
     },
@@ -1859,39 +1924,42 @@ function buildApplicationMenu(window) {
         {
           label: "搜索",
           accelerator: "CmdOrCtrl+F",
-          click: () => sendAppMenuAction(window, "toggle_search")
-        },
-        {
-          label: "显示/隐藏目录",
-          accelerator: "CmdOrCtrl+1",
-          click: () => sendAppMenuAction(window, "toggle_sidebar")
+          click: () => sendAppMenuAction(window, { type: "toggle_search" })
         },
         {
           label: "显示/隐藏 AI 面板",
           accelerator: "CmdOrCtrl+2",
-          click: () => sendAppMenuAction(window, "toggle_ai_panel")
+          click: () => sendAppMenuAction(window, { type: "toggle_ai_panel" })
         },
         { type: "separator" },
         {
           label: "恢复 100% 缩放",
           accelerator: "CmdOrCtrl+0",
-          click: () => sendAppMenuAction(window, "reset_zoom")
+          click: () => sendAppMenuAction(window, { type: "reset_zoom" })
         },
         { type: "separator" },
         {
           label: "上一页",
           accelerator: "Left",
-          click: () => sendAppMenuAction(window, "previous_page")
+          click: () => sendAppMenuAction(window, { type: "previous_page" })
         },
         {
           label: "下一页",
           accelerator: "Right",
-          click: () => sendAppMenuAction(window, "next_page")
+          click: () => sendAppMenuAction(window, { type: "next_page" })
         }
       ]
     }
   ];
   return Menu.buildFromTemplate(template);
+}
+function refreshApplicationMenu() {
+  const window = mainWindow;
+  if (!window) {
+    return;
+  }
+  const menu = buildApplicationMenu(window);
+  window.setMenu(menu);
 }
 function createMainWindow() {
   const window = new BrowserWindow({
@@ -1933,7 +2001,7 @@ function createMainWindow() {
     const indexPath = join(currentDir, "../renderer/index.html");
     void window.loadFile(indexPath);
   }
-  window.setMenu(buildApplicationMenu(window));
+  refreshApplicationMenu();
   return window;
 }
 async function bootstrap() {
@@ -1946,10 +2014,14 @@ async function bootstrap() {
     userDataPath: app.getPath("userData"),
     documentsPath: app.getPath("documents")
   });
-  createMainWindow();
+  ipcMain.on(IPC_CHANNELS.MENU_UPDATE_RECENT_DOCUMENTS, (_event, docs) => {
+    recentDocs = Array.isArray(docs) ? docs.slice(0, 10) : [];
+    refreshApplicationMenu();
+  });
+  mainWindow = createMainWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createMainWindow();
+      mainWindow = createMainWindow();
     }
   });
 }

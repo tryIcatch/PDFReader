@@ -104,7 +104,7 @@ export type TestPix2TexSettingsParams = {
   pythonPath: string;
 };
 
-export type AutoTranslateSettingsView = {
+export type HoverTranslateSettingsView = {
   enabled: boolean;
 };
 
@@ -215,6 +215,7 @@ export type TranslateTextParams = {
   text: string;
   targetLang: string;
   context?: string;
+  formulaProtected?: boolean;
 };
 
 export type TranslateTextResult = {
@@ -357,15 +358,16 @@ export type SaveFormulaImageResult = {
 };
 
 export type AppMenuAction =
-  | "open_library"
-  | "open_file"
-  | "open_settings"
-  | "toggle_search"
-  | "toggle_sidebar"
-  | "toggle_ai_panel"
-  | "reset_zoom"
-  | "previous_page"
-  | "next_page";
+  | { type: "open_library" }
+  | { type: "open_file" }
+  | { type: "open_recent"; filePath: string }
+  | { type: "open_settings" }
+  | { type: "toggle_search" }
+  | { type: "toggle_ai_panel" }
+  | { type: "reset_zoom" }
+  | { type: "previous_page" }
+  | { type: "next_page" }
+  | { type: "toggle_focus_mode" };
 
 export type PreloadApi = {
   getLaunchState(): Promise<LaunchState>;
@@ -397,11 +399,12 @@ export type PreloadApi = {
   testPix2TexSettings(params: TestPix2TexSettingsParams): Promise<ProviderHealthCheckResult>;
   saveFormulaOcrSettings(params: SaveFormulaOcrSettingsParams): Promise<void>;
   getFormulaOcrSettings(): Promise<FormulaOcrSettingsView | null>;
-  saveAutoTranslateSettings(params: { enabled: boolean }): Promise<void>;
-  getAutoTranslateSettings(): Promise<AutoTranslateSettingsView>;
+  saveHoverTranslateSettings(params: { enabled: boolean }): Promise<void>;
+  getHoverTranslateSettings(): Promise<HoverTranslateSettingsView>;
   saveThemeSettings(params: SaveThemeSettingsParams): Promise<void>;
   getThemeSettings(): Promise<ThemeSettingsView>;
   pickPdfFile(): Promise<PickPdfFileResult>;
   saveFormulaImage(params: SaveFormulaImageParams): Promise<SaveFormulaImageResult>;
   onAppMenuAction(listener: (action: AppMenuAction) => void): () => void;
+  updateRecentDocumentsMenu(docs: Array<{ fileName: string; filePath: string }>): void;
 };

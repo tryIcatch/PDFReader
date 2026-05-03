@@ -26,13 +26,25 @@ type ChatCompletionResponse = {
 export class OpenAiCompatibleProvider {
   async translateText(
     config: OpenAiCompatibleRuntimeConfig,
-    params: Pick<TranslateTextParams, "text" | "targetLang" | "context">,
+    params: Pick<TranslateTextParams, "text" | "targetLang" | "context"> & {
+      formulaProtected?: boolean;
+    },
   ): Promise<string> {
+    const systemContent = params.formulaProtected
+      ? [
+          "你是学术论文阅读助手。请只输出译文，保持术语准确、简洁。",
+          "重要：文本中的 ⟦FORMULA_n⟧ 是数学公式占位符。",
+          "1. 不要翻译、修改、删除任何占位符。",
+          "2. 占位符必须原样保留在译文中。",
+          "3. 只翻译周围的自然语言文本。",
+          "4. 不要增加解释性前缀。",
+        ].join("\n")
+      : "你是学术论文阅读助手。请只输出译文，保持术语准确、简洁，不要增加解释性前缀。";
+
     const content = await this.requestChatCompletion(config, [
       {
         role: "system",
-        content:
-          "你是学术论文阅读助手。请只输出译文，保持术语准确、简洁，不要增加解释性前缀。",
+        content: systemContent,
       },
       {
         role: "user",
@@ -58,28 +70,23 @@ export class OpenAiCompatibleProvider {
       {
         role: "system",
         content:
-          "你是论文公式讲解助手。请仅返回 JSON，不要使用 Markdown 代码块。JSON 结构必须是 {\"explanation\":\"...\",\"variables\":[{\"symbol\":\"...\",\"meaning\":\"...\"}]}。",
+          "你是论文公式讲解助手。请直接用 Markdown 格式输出公式的中文解释，不要包含 JSON、不要使用代码块、不要输出 explanation/variables/meaning 等字段名。数学公式使用 LaTeX 语法：行内公式用 \\(...\\)，块级公式用 \\[...\\]。",
       },
       {
         role: "user",
         content: [
-          "请用中文解释下面的公式，并提取变量含义。",
+          "请用中文解释下面的公式，直接输出可展示的 Markdown 正文。",
           `LaTeX: ${params.latex}`,
           params.context ? `上下文：${params.context}` : undefined,
-          "要求 explanation 中包含：公式含义、使用场景和简化说明。",
         ]
           .filter(Boolean)
           .join("\n\n"),
       },
     ]);
 
-    const parsed = this.parseJsonPayload(content) as
-      | { explanation?: string; variables?: FormulaVariable[] }
-      | undefined;
-
     return {
-      explanation: parsed?.explanation?.trim() || content.trim(),
-      variables: Array.isArray(parsed?.variables) ? parsed!.variables : [],
+      explanation: content.trim(),
+      variables: [],
     };
   }
 

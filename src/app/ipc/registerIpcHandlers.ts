@@ -29,7 +29,7 @@ import type {
   AiSettingsView,
   AppError,
   AppErrorCode,
-  AutoTranslateSettingsView,
+  HoverTranslateSettingsView,
   CreateLibraryFolderParams,
   ExplainFormulaParams,
   ExportMarkdownParams,
@@ -107,7 +107,7 @@ const MATHPIX_META_KEY = "mathpix.meta";
 const PIX2TEX_META_KEY = "pix2tex.meta";
 const FORMULA_OCR_META_KEY = "formula.ocr.meta";
 const THEME_META_KEY = "ui.theme.meta";
-const AUTO_TRANSLATE_META_KEY = "ui.auto-translate.meta";
+const HOVER_TRANSLATE_META_KEY = "ui.hover-translate.meta";
 const DEFAULT_THEME_SETTINGS: ThemeSettingsView = {
   accentColor: "#7f4f24",
 };
@@ -318,17 +318,17 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     return settingsRepository.get<ThemeSettingsView>(THEME_META_KEY) ?? DEFAULT_THEME_SETTINGS;
   });
 
-  register<{ enabled: boolean }, void>(IPC_CHANNELS.SETTINGS_SAVE_AUTO_TRANSLATE, (payload) => {
-    settingsRepository.upsert(AUTO_TRANSLATE_META_KEY, {
+  register<{ enabled: boolean }, void>(IPC_CHANNELS.SETTINGS_SAVE_HOVER_TRANSLATE, (payload) => {
+    settingsRepository.upsert(HOVER_TRANSLATE_META_KEY, {
       enabled: Boolean(payload.enabled),
-    } satisfies AutoTranslateSettingsView);
+    } satisfies HoverTranslateSettingsView);
   });
 
-  register<undefined, AutoTranslateSettingsView>(
-    IPC_CHANNELS.SETTINGS_GET_AUTO_TRANSLATE,
+  register<undefined, HoverTranslateSettingsView>(
+    IPC_CHANNELS.SETTINGS_GET_HOVER_TRANSLATE,
     () => {
       return (
-        settingsRepository.get<AutoTranslateSettingsView>(AUTO_TRANSLATE_META_KEY) ?? {
+        settingsRepository.get<HoverTranslateSettingsView>(HOVER_TRANSLATE_META_KEY) ?? {
           enabled: false,
         }
       );
@@ -463,7 +463,10 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
       };
     }
 
-    const translatedText = await aiProvider.translateText(aiConfig, payload);
+    const translatedText = await aiProvider.translateText(aiConfig, {
+      ...payload,
+      formulaProtected: payload.formulaProtected ?? false,
+    });
     translationCacheRepository.save({
       cacheKey,
       sourceText: payload.text,

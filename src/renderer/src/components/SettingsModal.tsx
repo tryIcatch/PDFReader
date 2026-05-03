@@ -8,7 +8,8 @@ type SettingsModalProps = {
   onClose: () => void;
   onStatusChange: (status: string) => void;
   onThemeChange?: (accentColor: string) => void;
-  onAutoTranslateChange?: (enabled: boolean) => void;
+  focusColumnMode: "single" | "double";
+  onFocusColumnModeChange: (mode: "single" | "double") => void;
 };
 
 const themeSwatches = ["#7f4f24", "#2563eb", "#0f766e", "#b45309", "#be123c", "#6d28d9"];
@@ -37,9 +38,9 @@ export function SettingsModal(props: SettingsModalProps) {
   const [pix2texPythonPath, setPix2texPythonPath] = useState("");
   const [pix2texConfigured, setPix2texConfigured] = useState(false);
   const [pix2texTestFeedback, setPix2texTestFeedback] = useState("");
+  const [hoverTranslateEnabled, setHoverTranslateEnabled] = useState(false);
+  const [savingHoverTranslate, setSavingHoverTranslate] = useState(false);
   const [themeColor, setThemeColor] = useState("#7f4f24");
-  const [autoTranslateEnabled, setAutoTranslateEnabled] = useState(false);
-  const [savingAutoTranslate, setSavingAutoTranslate] = useState(false);
 
   useEffect(() => {
     if (!props.open) {
@@ -53,13 +54,13 @@ export function SettingsModal(props: SettingsModalProps) {
       setFeedback("");
 
       try {
-        const [aiSettings, mathpixSettings, pix2texSettings, formulaOcrSettings, themeSettings, autoTranslateSettings] = await Promise.all([
+        const [aiSettings, mathpixSettings, pix2texSettings, formulaOcrSettings, themeSettings, hoverTranslateSettings] = await Promise.all([
           settingsService.getAiSettings(),
           settingsService.getMathpixSettings(),
           settingsService.getPix2TexSettings(),
           settingsService.getFormulaOcrSettings(),
           settingsService.getThemeSettings(),
-          settingsService.getAutoTranslateSettings(),
+          settingsService.getHoverTranslateSettings(),
         ]);
 
         if (canceled) {
@@ -79,8 +80,8 @@ export function SettingsModal(props: SettingsModalProps) {
         setPix2texConfigured(Boolean(pix2texSettings?.configured));
         setPix2texTestFeedback("");
         setFormulaOcrProvider(formulaOcrSettings?.provider ?? "mathpix");
+        setHoverTranslateEnabled(hoverTranslateSettings.enabled);
         setThemeColor(themeSettings.accentColor);
-        setAutoTranslateEnabled(autoTranslateSettings.enabled);
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : "读取设置失败";
         setFeedback(message);
@@ -241,25 +242,21 @@ export function SettingsModal(props: SettingsModalProps) {
     }
   }
 
-  async function handleSaveAutoTranslateSettings(nextEnabled = autoTranslateEnabled) {
-    setSavingAutoTranslate(true);
+  async function handleSaveHoverTranslateSettings(enabled: boolean) {
+    setSavingHoverTranslate(true);
     setFeedback("");
 
     try {
-      await settingsService.saveAutoTranslateSettings({
-        enabled: nextEnabled,
-      });
-
-      setAutoTranslateEnabled(nextEnabled);
-      props.onAutoTranslateChange?.(nextEnabled);
-      setFeedback(`划词自动翻译已${nextEnabled ? "开启" : "关闭"}`);
-      props.onStatusChange(`划词自动翻译已${nextEnabled ? "开启" : "关闭"}`);
+      await settingsService.saveHoverTranslateSettings({ enabled });
+      setHoverTranslateEnabled(enabled);
+      setFeedback(enabled ? "悬停翻译已开启" : "悬停翻译已关闭");
+      props.onStatusChange(enabled ? "悬停翻译已开启" : "悬停翻译已关闭");
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : "保存划词翻译设置失败";
+      const message = cause instanceof Error ? cause.message : "保存悬停翻译设置失败";
       setFeedback(message);
       props.onStatusChange(message);
     } finally {
-      setSavingAutoTranslate(false);
+      setSavingHoverTranslate(false);
     }
   }
 
@@ -317,7 +314,7 @@ export function SettingsModal(props: SettingsModalProps) {
         </div>
 
         {loading ? <p className="muted">正在读取现有配置…</p> : null}
-        {feedback ? <div className="settings-feedback">{feedback}</div> : null}
+        <div className={feedback ? "settings-feedback" : "settings-feedback settings-feedback--hidden"}>{feedback || " "}</div>
 
         <div className="settings-grid">
           <section className="settings-card">
@@ -389,34 +386,68 @@ export function SettingsModal(props: SettingsModalProps) {
 
           <section className="settings-card">
             <div className="settings-card-header">
-              <h3>划词自动翻译</h3>
-              <span
-                className={
-                  autoTranslateEnabled ? "settings-badge settings-badge--ok" : "settings-badge"
-                }
-              >
-                {autoTranslateEnabled ? "已开启" : "已关闭"}
+              <h3>悬停翻译</h3>
+              <span className={hoverTranslateEnabled ? "settings-badge settings-badge--ok" : "settings-badge"}>
+                {hoverTranslateEnabled ? "已开启" : "已关闭"}
               </span>
             </div>
 
             <p className="muted">
-              开启后，鼠标悬停在 PDF 文本上时会自动弹出翻译浮窗。
+              开启后，划选 PDF 文本时会自动翻译。AI 面板展开时译文出现在面板内，面板收起时译文以浮窗展示在选中位置附近，几秒后自动消失。
             </p>
 
             <div className="panel-actions">
               <button
-                disabled={savingAutoTranslate}
-                onClick={() => {
-                  const nextEnabled = !autoTranslateEnabled;
-                  void handleSaveAutoTranslateSettings(nextEnabled);
-                }}
+                disabled={savingHoverTranslate}
+                onClick={() => void handleSaveHoverTranslateSettings(!hoverTranslateEnabled)}
               >
-                {savingAutoTranslate
+                {savingHoverTranslate
                   ? "保存中…"
-                  : autoTranslateEnabled
-                    ? "关闭划词翻译"
-                    : "开启划词翻译"}
+                  : hoverTranslateEnabled
+                    ? "关闭悬停翻译"
+                    : "开启悬停翻译"}
               </button>
+            </div>
+          </section>
+
+          <section className="settings-card">
+            <div className="settings-card-header">
+              <h3>专注模式</h3>
+              <span className="settings-badge">
+                {props.focusColumnMode === "single" ? "单栏" : "双栏"}
+              </span>
+            </div>
+
+            <p className="muted">
+              设置 PDF 的排版方式。单栏模式下，鼠标所在整行清晰；双栏模式下，仅鼠标所在栏清晰，另一栏模糊。
+            </p>
+
+            <div className="settings-provider-group">
+              <label className="settings-provider-option">
+                <input
+                  type="radio"
+                  name="focus-column-mode"
+                  checked={props.focusColumnMode === "single"}
+                  onChange={() => props.onFocusColumnModeChange("single")}
+                />
+                <div>
+                  <strong>单栏</strong>
+                  <p className="muted">适合单栏排版论文。鼠标所在行全宽清晰。</p>
+                </div>
+              </label>
+
+              <label className="settings-provider-option">
+                <input
+                  type="radio"
+                  name="focus-column-mode"
+                  checked={props.focusColumnMode === "double"}
+                  onChange={() => props.onFocusColumnModeChange("double")}
+                />
+                <div>
+                  <strong>双栏</strong>
+                  <p className="muted">适合双栏排版论文。鼠标所在栏清晰，另一栏模糊。</p>
+                </div>
+              </label>
             </div>
           </section>
 
